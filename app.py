@@ -3,13 +3,12 @@ import pandas as pd
 import requests
 import sqlite3
 import os
-from datetime import datetime
 
 st.set_page_config(page_title="Playa News", page_icon="🌴", layout="wide")
 
 st.title("🌴 Playa News")
 st.subheader("Tickster → Nyhetsbrev Dashboard")
-st.caption("Stöd för Excel (.xlsx) och CSV från Tickster-rapporter")
+st.caption("Excel & CSV från Tickster-rapporter")
 
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 BREVO_LIST_ID = os.getenv("BREVO_LIST_ID")
@@ -28,35 +27,34 @@ conn.execute("""
     )
 """)
 
-# ====================== HJÄLPFUNKTIONER ======================
+# ====================== FUNKTIONER ======================
 def rensa_och_spara_df(df_raw):
     df = df_raw.copy()
     
-    # Normalisera kolumnnamn (vanliga namn från Tickster-rapporter)
+    # Normalisera kolumnnamn
     df.columns = df.columns.str.strip().str.lower()
     
-    # Hitta rätt kolumner (flexibelt)
-    email_col = next((col for col in df.columns if 'email' in col or 'e-post' in col), None)
-    name_col = next((col for col in df.columns if 'namn' in col or 'name' in col or 'köpare' in col), None)
-    phone_col = next((col for col in df.columns if 'telefon' in col or 'phone' in col or 'mobil' in col), None)
-    date_col = next((col for col in df.columns if 'datum' in col or 'date' in col or 'köp' in col), None)
+    # Försök hitta rätt kolumner (vanliga från Tickster)
+    email_col = next((col for col in df.columns if 'email' in col or 'e-post' in col or 'epost' in col), None)
+    name_col = next((col for col in df.columns if any(x in col for x in ['namn', 'name', 'köpare', 'buyer'])), None)
+    phone_col = next((col for col in df.columns if any(x in col for x in ['telefon', 'phone', 'mobil', 'tel'])), None)
+    date_col = next((col for col in df.columns if any(x in col for x in ['datum', 'date', 'köp', 'order'])), None)
     
     if not email_col:
-        st.error("Kunde inte hitta någon e-postkolumn i filen. Kolla att filen innehåller e-postadresser.")
+        st.error("Kunde inte hitta någon kolumn med e-postadresser i filen.")
         return 0, 0, 0
     
-    df = df.rename(columns={
-        email_col: 'email',
-        name_col: 'name' if name_col else None,
-        phone_col: 'phone' if phone_col else None,
-        date_col: 'last_purchase' if date_col else None
-    })
+    # Byt namn på kolumner för enkelhet
+    rename_dict = {email_col: 'email'}
+    if name_col: rename_dict[name_col] = 'name'
+    if phone_col: rename_dict[phone_col] = 'phone'
+    if date_col: rename_dict[date_col] = 'last_purchase'
     
-    # Rensa data
+    df = df.rename(columns=rename_dict)
+    
+    # Rensa
     df['email'] = df['email'].astype(str).str.strip().str.lower()
-    df = df[df['email'].str.contains('@', na=False)]   # ta bort rader utan e-post
-    
-    # Ta bort exakta dubbletter baserat på e-post (behåll senaste)
+    df = df[df['email'].str.contains('@', na=False)]
     df = df.drop_duplicates(subset=['email'], keep='last')
     
     cursor = conn.cursor()
@@ -65,8 +63,8 @@ def rensa_och_spara_df(df_raw):
     
     for _, row in df.iterrows():
         email = row['email']
-        name = str(row.get('name', '')).strip() if 'name' in row else ''
-        phone = str(row.get('phone', '')).strip() if 'phone' in row else ''
+        name = str(row.get('name', '')).strip()
+        phone = str(row.get('phone', '')).strip()
         last_purchase = str(row.get('last_purchase', '')).strip()
         
         cursor.execute("SELECT email FROM kontakter WHERE email = ?", (email,))
@@ -124,9 +122,7 @@ tab1, tab2, tab3 = st.tabs(["📤 Ladda upp fil", "📋 Alla kontakter", "✉️
 
 with tab1:
     st.subheader("Ladda upp Excel eller CSV från Tickster")
-    st.info("Du kan ladda upp både **.xlsx** (Excel) och **.csv** filer från Ticksters rapporter.")
-    
-    uploaded_file = st.file_uploader("Välj fil från Tickster", type=["xlsx", "xls", "csv"])
+    uploaded_file = st.file_uploader("Välj fil (.xlsx, .xls eller .csv)", type=["xlsx", "xls", "csv"])
     
     if uploaded_file:
         try:
@@ -135,9 +131,45 @@ with tab1:
             else:
                 df = pd.read_excel(uploaded_file)
             
-            st.success(f"✅ Filen lästes in – {len(df)} rader hittades")
-            st.dataframe(df.head(8), use_container_width=True)
+            st.success(f"✅ Filen lästes in – {len(df)} rader")
+            st.dataframe(df.head(10), use_container_width=True)
             
             col1, col2 = st.columns(2)
             with col1:
-                if
+                if st.button("💾 Bearbeta filen (ta bort dubbletter)", type="primary"):
+                    with st.spinner("Bearbetar..."):
+                        total, nya, uppdaterade = rensa_och_spara_df(df)
+                        st.success(f"✅ {total} unika kontakter bearbetade\n({nya} nya + {uppdaterade} uppdaterade)")
+            
+            with col2:
+                if st.button("💾 Bearbeta + Synka till Brevo"):
+                    with st.spinner("Bearbetar och synkar..."):
+                        total, nya, uppdaterade = rensa_och_spara_df(df)
+                        synkade = synka_till_brevo()
+                        st.success(f"✅ Klar!\n{total} unika | {nya} nya | {uppdaterade} uppdaterade | {synkade} skickade till Brevo")
+                        
+        except Exception as e:
+            st.error(f"Fel vid läsning av filen: {e}")
+
+with tab2:
+    st.subheader("Alla kontakter i databasen")
+    df_db = pd.read_sql_query("""
+        SELECT email, name, phone, last_purchase, updated_at 
+        FROM kontakter 
+        ORDER BY updated_at DESC
+    """, conn)
+    
+    if not df_db.empty:
+        st.dataframe(df_db, use_container_width=True, hide_index=True)
+        st.download_button("📥 Ladda ner alla kontakter", df_db.to_csv(index=False), "playa_kontakter.csv")
+    else:
+        st.info("Inga kontakter än. Ladda upp en fil först.")
+
+with tab3:
+    st.link_button("➡️ Öppna Brevo och skapa nytt nyhetsbrev", 
+                   "https://app.brevo.com/campaigns", 
+                   type="primary", use_container_width=True)
+
+with st.sidebar:
+    total = pd.read_sql("SELECT COUNT(*) as cnt FROM kontakter", conn).iloc[0]['cnt']
+    st.metric("Totalt unika kontakter", total)
