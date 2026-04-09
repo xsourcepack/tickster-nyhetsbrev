@@ -8,12 +8,10 @@ st.set_page_config(page_title="Playa News", page_icon="🌴", layout="wide")
 
 st.title("🌴 Playa News")
 st.subheader("Tickster → Nyhetsbrev Dashboard")
-st.caption("Excel & CSV från Tickster-rapporter")
 
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 BREVO_LIST_ID = os.getenv("BREVO_LIST_ID")
 
-# ====================== DATATABELL ======================
 conn = sqlite3.connect("kontakter.db", check_same_thread=False)
 conn.execute("""
     CREATE TABLE IF NOT EXISTS kontakter (
@@ -27,24 +25,19 @@ conn.execute("""
     )
 """)
 
-# ====================== FUNKTIONER ======================
 def rensa_och_spara_df(df_raw):
     df = df_raw.copy()
-    
-    # Normalisera kolumnnamn
     df.columns = df.columns.str.strip().str.lower()
     
-    # Försök hitta rätt kolumner (vanliga från Tickster)
-    email_col = next((col for col in df.columns if 'email' in col or 'e-post' in col or 'epost' in col), None)
-    name_col = next((col for col in df.columns if any(x in col for x in ['namn', 'name', 'köpare', 'buyer'])), None)
-    phone_col = next((col for col in df.columns if any(x in col for x in ['telefon', 'phone', 'mobil', 'tel'])), None)
-    date_col = next((col for col in df.columns if any(x in col for x in ['datum', 'date', 'köp', 'order'])), None)
+    email_col = next((col for col in df.columns if any(x in col for x in ['email', 'e-post', 'epost'])), None)
+    name_col = next((col for col in df.columns if any(x in col for x in ['namn', 'name', 'köpare'])), None)
+    phone_col = next((col for col in df.columns if any(x in col for x in ['telefon', 'phone', 'mobil'])), None)
+    date_col = next((col for col in df.columns if any(x in col for x in ['datum', 'date', 'köp'])), None)
     
     if not email_col:
-        st.error("Kunde inte hitta någon kolumn med e-postadresser i filen.")
+        st.error("Kunde inte hitta e-postkolumn i filen.")
         return 0, 0, 0
     
-    # Byt namn på kolumner för enkelhet
     rename_dict = {email_col: 'email'}
     if name_col: rename_dict[name_col] = 'name'
     if phone_col: rename_dict[phone_col] = 'phone'
@@ -52,7 +45,6 @@ def rensa_och_spara_df(df_raw):
     
     df = df.rename(columns=rename_dict)
     
-    # Rensa
     df['email'] = df['email'].astype(str).str.strip().str.lower()
     df = df[df['email'].str.contains('@', na=False)]
     df = df.drop_duplicates(subset=['email'], keep='last')
@@ -122,7 +114,7 @@ tab1, tab2, tab3 = st.tabs(["📤 Ladda upp fil", "📋 Alla kontakter", "✉️
 
 with tab1:
     st.subheader("Ladda upp Excel eller CSV från Tickster")
-    uploaded_file = st.file_uploader("Välj fil (.xlsx, .xls eller .csv)", type=["xlsx", "xls", "csv"])
+    uploaded_file = st.file_uploader("Välj fil (.xlsx eller .csv)", type=["xlsx", "xls", "csv"])
     
     if uploaded_file:
         try:
@@ -132,43 +124,32 @@ with tab1:
                 df = pd.read_excel(uploaded_file)
             
             st.success(f"✅ Filen lästes in – {len(df)} rader")
-            st.dataframe(df.head(10), use_container_width=True)
+            st.dataframe(df.head(10))
             
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("💾 Bearbeta filen (ta bort dubbletter)", type="primary"):
-                    with st.spinner("Bearbetar..."):
-                        total, nya, uppdaterade = rensa_och_spara_df(df)
-                        st.success(f"✅ {total} unika kontakter bearbetade\n({nya} nya + {uppdaterade} uppdaterade)")
-            
-            with col2:
-                if st.button("💾 Bearbeta + Synka till Brevo"):
-                    with st.spinner("Bearbetar och synkar..."):
-                        total, nya, uppdaterade = rensa_och_spara_df(df)
-                        synkade = synka_till_brevo()
-                        st.success(f"✅ Klar!\n{total} unika | {nya} nya | {uppdaterade} uppdaterade | {synkade} skickade till Brevo")
-                        
+            if st.button("💾 Bearbeta filen (ta bort dubbletter)", type="primary"):
+                with st.spinner("Bearbetar..."):
+                    total, nya, uppdaterade = rensa_och_spara_df(df)
+                    st.success(f"✅ {total} unika kontakter\n({nya} nya, {uppdaterade} uppdaterade)")
+                    
+            if st.button("💾 Bearbeta + Synka till Brevo"):
+                with st.spinner("Bearbetar och synkar..."):
+                    total, nya, uppdaterade = rensa_och_spara_df(df)
+                    synkade = synka_till_brevo()
+                    st.success(f"✅ {total} unika | {nya} nya | {uppdaterade} uppdaterade | {synkade} skickade till Brevo")
+                    
         except Exception as e:
             st.error(f"Fel vid läsning av filen: {e}")
+            st.info("Tips: Se till att filen innehåller en kolumn med e-postadresser.")
 
 with tab2:
-    st.subheader("Alla kontakter i databasen")
-    df_db = pd.read_sql_query("""
-        SELECT email, name, phone, last_purchase, updated_at 
-        FROM kontakter 
-        ORDER BY updated_at DESC
-    """, conn)
-    
+    st.subheader("Alla kontakter")
+    df_db = pd.read_sql_query("SELECT email, name, phone, last_purchase, updated_at FROM kontakter ORDER BY updated_at DESC", conn)
     if not df_db.empty:
         st.dataframe(df_db, use_container_width=True, hide_index=True)
         st.download_button("📥 Ladda ner alla kontakter", df_db.to_csv(index=False), "playa_kontakter.csv")
-    else:
-        st.info("Inga kontakter än. Ladda upp en fil först.")
 
 with tab3:
-    st.link_button("➡️ Öppna Brevo och skapa nytt nyhetsbrev", 
-                   "https://app.brevo.com/campaigns", 
-                   type="primary", use_container_width=True)
+    st.link_button("➡️ Öppna Brevo", "https://app.brevo.com/campaigns", type="primary", use_container_width=True)
 
 with st.sidebar:
     total = pd.read_sql("SELECT COUNT(*) as cnt FROM kontakter", conn).iloc[0]['cnt']
